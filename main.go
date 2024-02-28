@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 )
 
 const (
@@ -42,7 +43,104 @@ func main() {
 	case "genKeypairs":
 		GeneratePrivateKeysInFile(numSigners, nodeWIFs)
 		GeneratePrivateKeysInFile(numCommitees, commiteeWIFs)
-	case "genTaprootAddress":
+	case "TestSingleSignTaproot":
+		// Read commitee signers
+		cSignerKeys := make([]*btcec.PrivateKey, numCommitees)
+		cSignSet := make([]*btcec.PublicKey, numCommitees)
+		// open file
+		f2, err := os.Open(commiteeWIFs)
+		if err != nil {
+			panic(fmt.Sprintf("os.Open commitee wif error: %v", err))
+		}
+		// remember to close the file at the end of the program
+		defer f2.Close()
+		// read the file line by line using scanner
+		scanner2 := bufio.NewScanner(f2)
+		idx := 0
+		for scanner2.Scan() {
+			wif, err := btcutil.DecodeWIF(scanner2.Text())
+			if err != nil {
+				panic(fmt.Sprintf("btcutil.DecodeWIF error: %v", err))
+			}
+
+			cSignerKeys[idx] = wif.PrivKey
+			cSignSet[idx] = wif.PrivKey.PubKey()
+			idx++
+		}
+		aggregatedCommiteeKeys, _, _, err := musig2.AggregateKeys(cSignSet, false)
+		if err != nil {
+			panic(fmt.Sprintf("commitee keys musig2.AggregateKeys error: %v", err))
+		}
+		tapLeafs := make([]txscript.TapLeaf, len(cSignSet))
+		for idx, pk := range cSignSet {
+			builder := txscript.NewScriptBuilder()
+			builder.AddData(schnorr.SerializePubKey(pk))
+			builder.AddOp(txscript.OP_CHECKSIG)
+			script, err := builder.Script()
+			if err != nil {
+				panic(fmt.Sprintf("builder.Script() error: %v", err))
+			}
+			tapLeaf := txscript.NewBaseTapLeaf(script)
+			tapLeafs[idx] = tapLeaf
+		}
+		tapScriptTree := txscript.AssembleTaprootScriptTree(tapLeafs...)
+		rootHash := tapScriptTree.RootNode.TapHash()
+		taprootOutputKey := txscript.ComputeTaprootOutputKey(
+			aggregatedCommiteeKeys.FinalKey, rootHash[:],
+		)
+		address, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootOutputKey), &net)
+		if err != nil {
+			panic(fmt.Sprintf("btcutil.NewAddressTaproot error: %v", err))
+		}
+		fmt.Println("single sign taproot address is: ", address.EncodeAddress())
+
+		// Build raw tx and sign
+		rawTx := BuildSingleSignRawTx()
+		ctrlBlock := tapScriptTree.LeafMerkleProofs[0].ToControlBlock(aggregatedCommiteeKeys.FinalKey)
+		builder := txscript.NewScriptBuilder()
+		builder.AddData(schnorr.SerializePubKey(cSignSet[0]))
+		builder.AddOp(txscript.OP_CHECKSIG)
+		script, err := builder.Script()
+		if err != nil {
+			panic(fmt.Sprintf("builder.Script() error: %v", err))
+		}
+		tapLeaf := txscript.NewBaseTapLeaf(script)
+		sig := SignRawTransaction(rawTx, tapLeaf, cSignerKeys[0])
+		ctrlBlockBytes, err := ctrlBlock.ToBytes()
+		if err != nil {
+			panic(fmt.Sprintf("ctrlBlock.ToBytes error: %v", err))
+		}
+		rawTx.TxIn[0].Witness = wire.TxWitness{sig, script, ctrlBlockBytes}
+
+		// send tx
+		var rpcConfig = &rpcclient.ConnConfig{
+			Host:         "bitcoin-testnet-archive.allthatnode.com",
+			User:         "",
+			Pass:         "test",
+			HTTPPostMode: true,  // Bitcoin core only supports HTTP POST mode
+			DisableTLS:   false, // Bitcoin core does not provide TLS by default
+		}
+		client, err := rpcclient.New(rpcConfig, nil)
+		if err != nil {
+			panic(fmt.Sprintf("rpcclient.New error: %v", err))
+		}
+		defer client.Shutdown()
+
+		// Get the current block count.
+		blockCount, err := client.GetBlockCount()
+		if err != nil {
+			panic(fmt.Sprintf("rpcclient.New error: %v", err))
+		}
+		fmt.Println("lastest block count: ", blockCount)
+
+		hash, err := client.SendRawTransaction(rawTx, true)
+		if err != nil {
+			panic(fmt.Sprintf("client.SendRawTransaction error: %v", err))
+		}
+		// 867331d735469623406fae8618eafa013ef48af1b031c228ca0068212a92425a
+		fmt.Println("send tx success: ", hash.String())
+
+	case "TestMultiSignTaproot":
 		// First read the set of node signers
 		signerKeys := make([]*btcec.PrivateKey, numSigners)
 		signSet := make([]*btcec.PublicKey, numSigners)
@@ -106,6 +204,7 @@ func main() {
 			}
 			aggregatedKeyList[idx] = aggregatedKey
 		}
+		// sort
 		sort.SliceStable(aggregatedKeyList, func(i, j int) bool {
 			return hex.EncodeToString(schnorr.SerializePubKey(aggregatedKeyList[i].FinalKey)) <
 				hex.EncodeToString(schnorr.SerializePubKey(aggregatedKeyList[j].FinalKey))
@@ -150,28 +249,8 @@ func main() {
 			panic(fmt.Sprintf("btcutil.NewAddressTaproot error: %v", err))
 		}
 
-		fmt.Println("taproot address is: ", address.EncodeAddress())
+		fmt.Println("multi sign taproot address is: ", address.EncodeAddress())
 		timeEnd := time.Now()
 		fmt.Println("construct taproot time consume:", timeEnd.Sub(timeStart))
-	case "sendTx":
-		var rpcConfig = &rpcclient.ConnConfig{
-			Host:         "bitcoin-testnet-archive.allthatnode.com",
-			User:         "",
-			Pass:         "test",
-			HTTPPostMode: true,  // Bitcoin core only supports HTTP POST mode
-			DisableTLS:   false, // Bitcoin core does not provide TLS by default
-		}
-		client, err := rpcclient.New(rpcConfig, nil)
-		if err != nil {
-			panic(fmt.Sprintf("rpcclient.New error: %v", err))
-		}
-		defer client.Shutdown()
-
-		// Get the current block count.
-		blockCount, err := client.GetBlockCount()
-		if err != nil {
-			panic(fmt.Sprintf("rpcclient.New error: %v", err))
-		}
-		fmt.Println(blockCount)
 	}
 }
