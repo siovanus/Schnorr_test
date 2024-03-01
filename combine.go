@@ -73,19 +73,22 @@ func moveOneToLeft(leftNums []int) {
 }
 
 // 根据索引号数组得到元素数组
-func findByIndexs(elems []*btcec.PublicKey, indexs [][]int) [][]*btcec.PublicKey {
+func findByIndexs(elems []*btcec.PublicKey, indexs [][]int) []*Comb {
 	if len(indexs) == 0 {
-		return [][]*btcec.PublicKey{}
+		panic("length of keys is 0")
 	}
-	result := make([][]*btcec.PublicKey, len(indexs))
+	result := make([]*Comb, len(indexs))
 	for i, v := range indexs {
-		line := make([]*btcec.PublicKey, 0)
+		comb := &Comb{
+			Pubs: make([]*btcec.PublicKey, 0),
+		}
 		for j, v2 := range v {
 			if v2 == 1 {
-				line = append(line, elems[j])
+				comb.Pubs = append(comb.Pubs, elems[j])
+				comb.Indexs = v
 			}
 		}
-		result[i] = line
+		result[i] = comb
 	}
 	return result
 }

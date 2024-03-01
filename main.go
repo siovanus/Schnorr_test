@@ -27,6 +27,16 @@ const (
 	commiteeWIFs = "commitee_wifs.txt"
 )
 
+type Comb struct {
+	Pubs   []*btcec.PublicKey
+	Indexs []int
+}
+
+type AggregateComb struct {
+	Agg    *musig2.AggregateKey
+	Indexs []int
+}
+
 var net = chaincfg.TestNet3Params
 var Method string
 
@@ -105,7 +115,7 @@ func main() {
 			panic(fmt.Sprintf("builder.Script() error: %v", err))
 		}
 		tapLeaf := txscript.NewBaseTapLeaf(script)
-		sig := SignRawTransaction(rawTx, tapLeaf, cSignerKeys[0])
+		sig := SignTapscriptRawTransaction(rawTx, tapLeaf, cSignerKeys[0])
 		ctrlBlockBytes, err := ctrlBlock.ToBytes()
 		if err != nil {
 			panic(fmt.Sprintf("ctrlBlock.ToBytes error: %v", err))
@@ -196,18 +206,22 @@ func main() {
 		signerCombList := findByIndexs(signSet, indexs)
 
 		// Aggregate each combination, so we get aggregate key list
-		aggregatedKeyList := make([]*musig2.AggregateKey, len(signerCombList))
+		aggregatedCombList := make([]*AggregateComb, len(signerCombList))
 		for idx, signerComb := range signerCombList {
-			aggregatedKey, _, _, err := musig2.AggregateKeys(signerComb, false)
+			aggregatedKey, _, _, err := musig2.AggregateKeys(signerComb.Pubs, false)
 			if err != nil {
 				panic(fmt.Sprintf("musig2.AggregateKeys error: %v", err))
 			}
-			aggregatedKeyList[idx] = aggregatedKey
+			aggregatedComb := &AggregateComb{
+				Agg:    aggregatedKey,
+				Indexs: signerComb.Indexs,
+			}
+			aggregatedCombList[idx] = aggregatedComb
 		}
 		// sort
-		sort.SliceStable(aggregatedKeyList, func(i, j int) bool {
-			return hex.EncodeToString(schnorr.SerializePubKey(aggregatedKeyList[i].FinalKey)) <
-				hex.EncodeToString(schnorr.SerializePubKey(aggregatedKeyList[j].FinalKey))
+		sort.SliceStable(aggregatedCombList, func(i, j int) bool {
+			return hex.EncodeToString(schnorr.SerializePubKey(aggregatedCombList[i].Agg.FinalKey)) <
+				hex.EncodeToString(schnorr.SerializePubKey(aggregatedCombList[j].Agg.FinalKey))
 		})
 
 		// Aggregate commitee keys
@@ -223,8 +237,9 @@ func main() {
 		}
 
 		// Gen taproot tree from aggregate key list
-		tapLeafs := make([]txscript.TapLeaf, len(aggregatedKeyList))
-		for idx, aggregatedKey := range aggregatedKeyList {
+		tapLeafs := make([]txscript.TapLeaf, len(aggregatedCombList))
+		for idx, aggregatedComb := range aggregatedCombList {
+			aggregatedKey := aggregatedComb.Agg
 			builder := txscript.NewScriptBuilder()
 			builder.AddData(schnorr.SerializePubKey(aggregatedCommiteeKeys.FinalKey))
 			builder.AddOp(txscript.OP_CHECKSIG)
@@ -252,5 +267,52 @@ func main() {
 		fmt.Println("multi sign taproot address is: ", address.EncodeAddress())
 		timeEnd := time.Now()
 		fmt.Println("construct taproot time consume:", timeEnd.Sub(timeStart))
+
+		// // Build raw tx and sign
+		// rawTx := BuildMultiSignRawTx()
+
+		// ctrlBlock := tapScriptTree.LeafMerkleProofs[0].ToControlBlock(aggregatedCommiteeKeys.FinalKey)
+		// builder := txscript.NewScriptBuilder()
+		// builder.AddData(schnorr.SerializePubKey(cSignSet[0]))
+		// builder.AddOp(txscript.OP_CHECKSIG)
+		// script, err := builder.Script()
+		// if err != nil {
+		// 	panic(fmt.Sprintf("builder.Script() error: %v", err))
+		// }
+		// tapLeaf := txscript.NewBaseTapLeaf(script)
+		// sig := SignTapscriptRawTransaction(rawTx, tapLeaf, cSignerKeys[0])
+		// ctrlBlockBytes, err := ctrlBlock.ToBytes()
+		// if err != nil {
+		// 	panic(fmt.Sprintf("ctrlBlock.ToBytes error: %v", err))
+		// }
+		// rawTx.TxIn[0].Witness = wire.TxWitness{sig, script, ctrlBlockBytes}
+
+		// // send tx
+		// var rpcConfig = &rpcclient.ConnConfig{
+		// 	Host:         "bitcoin-testnet-archive.allthatnode.com",
+		// 	User:         "",
+		// 	Pass:         "test",
+		// 	HTTPPostMode: true,  // Bitcoin core only supports HTTP POST mode
+		// 	DisableTLS:   false, // Bitcoin core does not provide TLS by default
+		// }
+		// client, err := rpcclient.New(rpcConfig, nil)
+		// if err != nil {
+		// 	panic(fmt.Sprintf("rpcclient.New error: %v", err))
+		// }
+		// defer client.Shutdown()
+
+		// // Get the current block count.
+		// blockCount, err := client.GetBlockCount()
+		// if err != nil {
+		// 	panic(fmt.Sprintf("rpcclient.New error: %v", err))
+		// }
+		// fmt.Println("lastest block count: ", blockCount)
+
+		// hash, err := client.SendRawTransaction(rawTx, true)
+		// if err != nil {
+		// 	panic(fmt.Sprintf("client.SendRawTransaction error: %v", err))
+		// }
+
+		// fmt.Println("send tx success: ", hash.String())
 	}
 }

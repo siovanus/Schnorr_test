@@ -38,7 +38,7 @@ func GeneratePrivateKeysInFile(numSigners int, name string) {
 	}
 }
 
-func BuildRawTx() *wire.MsgTx {
+func BuildMultiSignRawTx() *wire.MsgTx {
 
 	// tb1qg7akyhjf6nmenw8w6g9kxtz0zl0z2zv99n9dyx
 	// https://blockstream.info/testnet/tx/1c72f20c44078dbbd2582db5014fd7ffde45de4798596e98203d25370175293a
@@ -82,7 +82,7 @@ func BuildSingleSignRawTx() *wire.MsgTx {
 	return tx
 }
 
-func SignRawTransaction(tx *wire.MsgTx, tapLeaf txscript.TapLeaf, privKey *btcec.PrivateKey) []byte {
+func SignTapscriptRawTransaction(tx *wire.MsgTx, tapLeaf txscript.TapLeaf, privKey *btcec.PrivateKey) []byte {
 	scriptHash, err := hex.DecodeString("5120f9a19eb5e4cd25387e43187039a947c0a73cb9ea8f02e4d43768198c84ae3f4c")
 	if err != nil {
 		panic(fmt.Sprintf("hex.DecodeString error: %v", err))
@@ -97,5 +97,8 @@ func SignRawTransaction(tx *wire.MsgTx, tapLeaf txscript.TapLeaf, privKey *btcec
 		tx, sigHashes, 0, value,
 		scriptHash, tapLeaf, txscript.SigHashDefault,
 		privKey)
+	if err != nil {
+		panic(fmt.Sprintf("txscript.RawTxInTapscriptSignature error: %v", err))
+	}
 	return sig
 }
